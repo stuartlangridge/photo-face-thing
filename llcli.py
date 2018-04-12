@@ -53,7 +53,11 @@ def cmd_group():
 def cmd_rename_group(before, after):
     pass
 
-@description("Make a very simple HTML gallery", 6)
+@description("Find the best face for each group", 6)
+def cmd_best_face():
+    core.find_best_faces()
+
+@description("Make a very simple HTML gallery", 7)
 def cmd_gallery(output):
     core.simple_gallery(output)
 
@@ -64,6 +68,7 @@ def cmd_all(folder, gallery_output):
     cmd_parse_images()
     cmd_pair()
     cmd_group()
+    cmd_best_face()
     cmd_gallery(gallery_output)
 
 if __name__ == "__main__":

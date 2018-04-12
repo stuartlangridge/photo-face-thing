@@ -50,7 +50,7 @@ def init(overwrite=False):
         image int, x int, y int, w int, h int, encoding text)""")
     c.execute("""CREATE TABLE pairs (face1 int, face2 int, distance real, grouped int)""")
     c.execute("""CREATE UNIQUE INDEX idx_pairs ON pairs (face1, face2)""")
-    c.execute("""CREATE TABLE groups (id integer primary key, name text)""")
+    c.execute("""CREATE TABLE groups (id integer primary key, name text, best_face int)""")
     c.execute("""CREATE TABLE faces2groups (face int, groupid int)""")
     db.commit()
 
@@ -198,8 +198,8 @@ def random_name(length=7):
     word.append(random.choice(vowels))
     word.append(random.choice(end_consonants))
     return "".join(word)
-    
-def group_faces_in_blocks(distance=0.4):
+
+def group_faces_in_blocks(distance=0.5):
     db = get_db()
     c = db.cursor()
     chunk_size = 10
@@ -235,7 +235,7 @@ def group_faces_in_blocks(distance=0.4):
                 pass
         else:
             # create a new group and put f1 and f2 in it
-            c.execute("insert into groups (name) values (?)", (random_name(),))
+            c.execute("insert into groups (name) values (null)")
             groupid = c.lastrowid
             c.execute("insert into faces2groups (face, groupid) values (?,?)", (face1, groupid))
             c.execute("insert into faces2groups (face, groupid) values (?,?)", (face2, groupid))
@@ -243,19 +243,53 @@ def group_faces_in_blocks(distance=0.4):
         db.commit()
     return len(pairs), cnt
 
+def find_best_faces():
+    db = get_db()
+    c = db.cursor()
+    sql = """select g.id, f.id, max(100 * f.w * f.h / i.width / i.height) from images i
+        inner join faces f on f.image = i.id inner join faces2groups f2g on f.id = f2g.face
+        inner join groups g on f2g.groupid = g.id group by g.id"""
+    c.execute(sql)
+    updates = [{"id": x[0], "face": x[1]} for x in c.fetchall()]
+    c.executemany("UPDATE groups set best_face = :face where id = :id", updates)
+    db.commit()
+
+def dict_factory(cursor, row):
+    d = {}
+    for idx, col in enumerate(cursor.description):
+        d[col[0]] = row[idx]
+    return d
+
+def get_groups_and_faces():
+    db = get_db()
+    c = db.cursor()
+    sql = """select g.id, g.name, f.x, f.y, f.w, f.h, i.full_path
+        from groups g inner join faces f on g.best_face = f.id
+        inner join images i on f.image = i.id"""
+    c.execute(sql)
+    out = [dict(zip(["groupid", "groupname", "x", "y", "w", "h", "image"], r)) for r in c.fetchall()]
+    return out
+
+def update_groupname(groupid, name):
+    db = get_db()
+    c = db.cursor()
+    c.execute("update groups set name = ? where id = ?", (name, groupid))
+    db.commit()
+
 def simple_gallery(output):
     db = get_db()
     c = db.cursor()
-    c.execute("""select g.name, i.thumbnail, i.filename, i.full_path, f.x, f.y, f.w, f.h, i.width, i.height
+    c.execute("""select g.id, g.name, i.thumbnail, i.filename, i.full_path, f.x, f.y, f.w, f.h, i.width, i.height
         from groups g inner join faces2groups f2g on g.id = f2g.groupid
         inner join faces f on f2g.face = f.id
         inner join images i on f.image = i.id
         order by g.name, i.filename
         """)
     groups = {}
-    for groupname, thumbnail, filename, full_path, fx, fy, fw, fh, iw, ih in c.fetchall():
-        if groupname not in groups: groups[groupname] = []
-        groups[groupname].append((thumbnail, filename, full_path, fx, fy, fw, fh, iw, ih))
+    for groupid, groupname, thumbnail, filename, full_path, fx, fy, fw, fh, iw, ih in c.fetchall():
+        gn = groupname if groupname else "Group {}".format(groupid)
+        if gn not in groups: groups[gn] = []
+        groups[gn].append((thumbnail, filename, full_path, fx, fy, fw, fh, iw, ih))
     with open(output, encoding="utf-8", mode="w") as fp:
         fp.write("""<!doctype html>
             <html><head><meta charset="utf-8"><title>Autogrouped gallery</title>
@@ -305,7 +339,7 @@ def simple_gallery(output):
                 if (this.checked) {
                     if (!madeFaces) {
                         Array.from(document.querySelectorAll("img")).forEach(function(img) {
-                            fpc = img.dataset.face.split(",").map(v => { return parseInt(v, 10); })
+                            fpc = img.dataset.face.split(",").map(v => { return parseFloat(v); })
                             var span = document.createElement("span");
                             var fig = img.parentNode;
                             var scaley = img.offsetHeight / fig.offsetHeight;
@@ -329,6 +363,18 @@ def simple_gallery(output):
                     bigfig.className = "bigfig";
                     document.body.appendChild(bigfig);
                     var bfi = bigfig.querySelector("img");
+                    bfi.onload = function() {
+                        fpc = bfi.dataset.face.split(",").map(v => { return parseFloat(v); })
+                        var span = bigfig.querySelector("span");
+                        var fw = parseInt(window.getComputedStyle(bigfig, null).width); // offset* includes the border
+                        var fh = parseInt(window.getComputedStyle(bigfig, null).height);
+                        var scalex = bfi.offsetWidth / fw;
+                        var scaley = bfi.offsetHeight / fh;
+                        span.style.top = (fpc[1] * scaley) + "%";
+                        span.style.height = (fpc[3] * scaley) + "%";
+                        span.style.left = (fpc[0] * scalex) + "%";
+                        span.style.width = (fpc[2] * scaley) + "%";
+                    }
                     bfi.src = bfi.dataset.full;
                     bigfig.onclick = function(e) {
                         e.stopPropagation();
